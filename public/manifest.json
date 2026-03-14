@@ -1,0 +1,17 @@
+{
+  "name": "SmartDebt",
+  "short_name": "SmartDebt",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#050810",
+  "theme_color": "#6366f1",
+  "description": "Gestión inteligente de deudas y ahorros",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/2489/2489756.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
