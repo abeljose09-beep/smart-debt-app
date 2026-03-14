@@ -13,9 +13,25 @@ import {
   Calendar,
   DollarSign,
   AlertCircle,
-  Save
+  Save,
+  User,
+  LogOut,
+  Phone
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { auth, db } from './firebase';
+import { 
+  createUserWithEmailAndPassword, 
+  signInWithEmailAndPassword, 
+  onAuthStateChanged, 
+  signOut 
+} from 'firebase/auth';
+import { 
+  doc, 
+  setDoc, 
+  getDoc, 
+  onSnapshot 
+} from 'firebase/firestore';
 
 // --- Utils ---
 const formatCurrency = (amount) => {
@@ -26,22 +42,9 @@ const formatCurrency = (amount) => {
   }).format(amount);
 };
 
-const useLocalStorage = (key, initialValue) => {
-  const [value, setValue] = useState(() => {
-    const saved = localStorage.getItem(key);
-    return saved ? JSON.parse(saved) : initialValue;
-  });
-
-  useEffect(() => {
-    localStorage.setItem(key, JSON.stringify(value));
-  }, [key, value]);
-
-  return [value, setValue];
-};
-
 // --- Components ---
 
-const Card = ({ children, title, subtitle, icon: Icon, color = "indigo" }) => (
+const Card = ({ children, title, subtitle, icon: Icon }) => (
   <motion.div 
     initial={{ opacity: 0, y: 20 }}
     animate={{ opacity: 1, y: 0 }}
@@ -97,28 +100,87 @@ const Modal = ({ isOpen, onClose, title, children }) => {
 // --- Main App ---
 
 export default function App() {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [authMode, setAuthMode] = useState('login'); // login | register
   const [activeTab, setActiveTab] = useState('home');
   
-  // -- Time Management --
+  // -- App States --
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth());
-  const [selectedPeriod, setSelectedPeriod] = useState('full'); // full | q1 | q2
-
-  // -- Profile State --
-  const [profile, setProfile] = useLocalStorage('dm_profile', {
-    salary: 2500000,
-    frequency: 'monthly',
-  });
+  const [selectedPeriod, setSelectedPeriod] = useState('full');
   
-  // -- Data States --
-  const [fixedExpenses, setFixedExpenses] = useLocalStorage('dm_fixed', []);
-  const [variableExpenses, setVariableExpenses] = useLocalStorage('dm_variable', []);
-  const [debts, setDebts] = useLocalStorage('dm_debts', []);
+  const [profile, setProfile] = useState({ salary: 2500000, frequency: 'monthly' });
+  const [fixedExpenses, setFixedExpenses] = useState([]);
+  const [variableExpenses, setVariableExpenses] = useState([]);
+  const [debts, setDebts] = useState([]);
 
-  // -- Modals --
+  // -- UI States --
   const [showAddFixed, setShowAddFixed] = useState(false);
   const [showAddVar, setShowAddVar] = useState(false);
   const [showAddDebt, setShowAddDebt] = useState(false);
   const [editingItem, setEditingItem] = useState(null);
+  const [error, setError] = useState('');
+
+  // --- Firebase Auth ---
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setLoading(false);
+    });
+    return unsubscribe;
+  }, []);
+
+  // --- sync with Firestore ---
+  useEffect(() => {
+    if (!user) return;
+
+    const unsubProfile = onSnapshot(doc(db, 'users', user.uid), (doc) => {
+      if (doc.exists()) setProfile(doc.data().profile || { salary: 2500000, frequency: 'monthly' });
+    });
+
+    const unsubData = onSnapshot(doc(db, 'data', user.uid), (doc) => {
+      if (doc.exists()) {
+        const data = doc.data();
+        setFixedExpenses(data.fixedExpenses || []);
+        setVariableExpenses(data.variableExpenses || []);
+        setDebts(data.debts || []);
+      }
+    });
+
+    return () => {
+      unsubProfile();
+      unsubData();
+    };
+  }, [user]);
+
+  const updateFirestore = async (newData) => {
+    if (!user) return;
+    await setDoc(doc(db, 'data', user.uid), newData, { merge: true });
+  };
+
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    setError('');
+    const fd = new FormData(e.target);
+    const email = fd.get('email');
+    const password = fd.get('password');
+
+    try {
+      if (authMode === 'register') {
+        const name = fd.get('name');
+        const phone = fd.get('phone');
+        const res = await createUserWithEmailAndPassword(auth, email, password);
+        await setDoc(doc(db, 'users', res.user.uid), {
+          name, phone, email,
+          profile: { salary: 2500000, frequency: 'monthly' }
+        });
+      } else {
+        await signInWithEmailAndPassword(auth, email, password);
+      }
+    } catch (err) {
+      setError('Error en la autenticación: ' + err.message);
+    }
+  };
 
   // --- Calculations ---
   const currentMonthYear = `${new Date().getFullYear()}-${selectedMonth}`;
@@ -144,7 +206,7 @@ export default function App() {
   const totalRemaining = periodSalary - totalFixed - totalVar - (selectedPeriod === 'full' ? totalDebtPayments : totalDebtPayments/2);
 
   // --- Handlers ---
-  const saveFixed = (e) => {
+  const saveFixed = async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
     const item = {
@@ -155,12 +217,12 @@ export default function App() {
       period: fd.get('period'),
       monthYear: currentMonthYear
     };
-    if (editingItem) setFixedExpenses(fixedExpenses.map(i => i.id === item.id ? item : i));
-    else setFixedExpenses([...fixedExpenses, item]);
+    const newList = editingItem ? fixedExpenses.map(i => i.id === item.id ? item : i) : [...fixedExpenses, item];
+    await updateFirestore({ fixedExpenses: newList });
     setShowAddFixed(false);
   };
 
-  const saveVar = (e) => {
+  const saveVar = async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
     const item = {
@@ -171,12 +233,12 @@ export default function App() {
       monthYear: currentMonthYear,
       date: new Date().toISOString().split('T')[0]
     };
-    if (editingItem) setVariableExpenses(variableExpenses.map(i => i.id === item.id ? item : i));
-    else setVariableExpenses([...variableExpenses, item]);
+    const newList = editingItem ? variableExpenses.map(i => i.id === item.id ? item : i) : [...variableExpenses, item];
+    await updateFirestore({ variableExpenses: newList });
     setShowAddVar(false);
   };
 
-  const saveDebt = (e) => {
+  const saveDebt = async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
     const item = {
@@ -186,18 +248,52 @@ export default function App() {
       monthlyPayment: Number(fd.get('payment')),
       remaining: Number(fd.get('remaining'))
     };
-    if (editingItem) setDebts(debts.map(i => i.id === item.id ? item : i));
-    else setDebts([...debts, item]);
+    const newList = editingItem ? debts.map(i => i.id === item.id ? item : i) : [...debts, item];
+    await updateFirestore({ debts: newList });
     setShowAddDebt(false);
   };
 
-  const deleteItem = (id, type) => {
-    if (type === 'fixed') setFixedExpenses(fixedExpenses.filter(i => i.id !== id));
-    if (type === 'var') setVariableExpenses(variableExpenses.filter(i => i.id !== id));
-    if (type === 'debt') setDebts(debts.filter(i => i.id !== id));
+  const deleteItem = async (id, type) => {
+    let newList;
+    if (type === 'fixed') {
+      newList = fixedExpenses.filter(i => i.id !== id);
+      await updateFirestore({ fixedExpenses: newList });
+    } else if (type === 'var') {
+      newList = variableExpenses.filter(i => i.id !== id);
+      await updateFirestore({ variableExpenses: newList });
+    } else if (type === 'debt') {
+      newList = debts.filter(i => i.id !== id);
+      await updateFirestore({ debts: newList });
+    }
   };
 
   // --- Views ---
+
+  const AuthView = () => (
+    <div className="scroll-area" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '80vh' }}>
+      <div className="glass-card" style={{ width: '100%', maxWidth: '360px' }}>
+        <h2 style={{ textAlign: 'center', marginBottom: '24px' }}>{authMode === 'login' ? 'Bienvenido' : 'Crear Cuenta'}</h2>
+        {error && <p style={{ color: 'var(--danger)', fontSize: '0.8rem', textAlign: 'center', marginBottom: '16px' }}>{error}</p>}
+        <form onSubmit={handleAuth} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          {authMode === 'register' && (
+            <>
+              <input type="text" name="name" className="input-field" placeholder="Nombre completo" required />
+              <input type="tel" name="phone" className="input-field" placeholder="Teléfono" required />
+            </>
+          )}
+          <input type="email" name="email" className="input-field" placeholder="Email" required />
+          <input type="password" name="password" className="input-field" placeholder="Contraseña" required />
+          <button className="btn-primary" type="submit">{authMode === 'login' ? 'Entrar' : 'Registrarse'}</button>
+        </form>
+        <p style={{ textAlign: 'center', marginTop: '20px', fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
+          {authMode === 'login' ? '¿No tienes cuenta?' : '¿Ya tienes cuenta?'}
+          <button onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')} style={{ background: 'none', border: 'none', color: 'var(--accent-color)', marginLeft: '8px', cursor: 'pointer' }}>
+            {authMode === 'login' ? 'Regístrate' : 'Entra'}
+          </button>
+        </p>
+      </div>
+    </div>
+  );
 
   const TimeSelector = () => (
     <div style={{ marginBottom: '24px' }}>
@@ -293,9 +389,6 @@ export default function App() {
             </div>
           </div>
         ))}
-        {[...currentFixed, ...currentVariable].length === 0 && (
-          <p style={{ padding: '30px', textAlign: 'center', color: 'var(--text-secondary)' }}>Sin registros en este periodo</p>
-        )}
       </div>
     </div>
   );
@@ -308,7 +401,6 @@ export default function App() {
           + Nueva
         </button>
       </div>
-
       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
         {debts.map(debt => (
           <motion.div key={debt.id} className="glass-card" onClick={() => { setEditingItem(debt); setShowAddDebt(true); }}>
@@ -318,65 +410,29 @@ export default function App() {
                 <Trash2 size={18} />
               </button>
             </div>
-            <div className="grid-2" style={{ marginBottom: '12px' }}>
-              <div>
-                <p style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Faltante</p>
-                <p className="currency">{formatCurrency(debt.remaining)}</p>
-              </div>
-              <div>
-                <p style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Cuota</p>
-                <p className="currency" style={{ color: 'var(--danger)' }}>{formatCurrency(debt.monthlyPayment)}</p>
-              </div>
+            <div className="grid-2">
+              <div><p style={{ fontSize: '0.7rem' }}>Faltante</p><p className="currency">{formatCurrency(debt.remaining)}</p></div>
+              <div><p style={{ fontSize: '0.7rem' }}>Cuota</p><p className="currency" style={{ color: 'var(--danger)' }}>{formatCurrency(debt.monthlyPayment)}</p></div>
             </div>
           </motion.div>
         ))}
-        {debts.length === 0 && (
-          <p style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: '40px' }}>No tienes deudas registradas</p>
-        )}
       </div>
     </div>
   );
 
-  const YearlyView = () => {
-    const months = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
-    return (
-      <div className="scroll-area">
-        <h2 style={{ marginBottom: '20px' }}>Resumen Anual</h2>
-        <Card title="Proyección 2024">
-          <div className="grid-2" style={{ marginBottom: '20px' }}>
-            <div>
-              <small style={{ color: 'var(--text-secondary)' }}>Ingreso Anual</small>
-              <p className="currency" style={{ color: 'var(--success)' }}>{formatCurrency(monthlySalary * 12)}</p>
-            </div>
-            <div>
-              <small style={{ color: 'var(--text-secondary)' }}>Gasto Fijo Anual</small>
-              <p className="currency" style={{ color: 'var(--danger)' }}>{formatCurrency(totalFixed * 12)}</p>
-            </div>
-          </div>
-          <div style={{ height: '120px', display: 'flex', alignItems: 'flex-end', gap: '4px' }}>
-            {months.map(m => (
-              <div key={m} style={{ flex: 1, background: 'var(--accent-color)', height: `${Math.random() * 50 + 30}%`, borderRadius: '4px 4px 0 0', opacity: 0.6 }}></div>
-            ))}
-          </div>
-        </Card>
-      </div>
-    );
-  };
-
   const SettingsView = () => {
     const [tempSalary, setTempSalary] = useState(profile.salary);
+    const handleSaveProfile = async () => {
+      await setDoc(doc(db, 'users', user.uid), { profile: { ...profile, salary: tempSalary } }, { merge: true });
+    };
+
     return (
       <div className="scroll-area">
         <h2 style={{ marginBottom: '24px' }}>Ajustes</h2>
         <Card title="Perfil Financiero" icon={Settings}>
           <div className="input-group">
             <label className="input-label">Monto de Sueldo</label>
-            <input 
-              type="number" className="input-field" 
-              value={tempSalary}
-              onChange={(e) => setTempSalary(Number(e.target.value))}
-              onBlur={() => setProfile({...profile, salary: tempSalary})}
-            />
+            <input type="number" className="input-field" value={tempSalary} onChange={(e) => setTempSalary(Number(e.target.value))} />
           </div>
           <div className="input-group">
             <label className="input-label">Frecuencia</label>
@@ -385,24 +441,27 @@ export default function App() {
               <option value="quincenal">Quincenal</option>
             </select>
           </div>
+          <button className="btn-primary" onClick={handleSaveProfile} style={{ width: '100%' }}>Guardar Cambios</button>
         </Card>
-        <button 
-          className="btn-secondary" 
-          style={{ width: '100%', color: 'var(--danger)', borderColor: 'var(--danger)' }}
-          onClick={() => { localStorage.clear(); window.location.reload(); }}
-        >
-          Borrar todos los datos
+        <button className="btn-secondary" style={{ width: '100%', marginTop: 'auto', color: 'var(--danger)' }} onClick={() => signOut(auth)}>
+          <LogOut size={18} style={{ marginRight: '8px' }} /> Cerrar Sesión
         </button>
       </div>
     );
   };
 
+  if (loading) return null;
+  if (!user) return <AuthView />;
+
   return (
     <div className="app-container">
       <header className="header">
         <h2 style={{ fontWeight: '800' }}>SmartDebt</h2>
-        <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'var(--accent-color)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <DollarSign size={18} color="white" />
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Hola!</span>
+          <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'var(--accent-color)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <User size={18} color="white" />
+          </div>
         </div>
       </header>
 
@@ -412,7 +471,7 @@ export default function App() {
           {activeTab === 'expenses' && <ExpensesView />}
           {activeTab === 'debts' && <DebtsView />}
           {activeTab === 'settings' && <SettingsView />}
-          {activeTab === 'yearly' && <YearlyView />}
+          {activeTab === 'yearly' && <div className="scroll-area"><Card title="Proyección 2024">🚧 Próximamente en la nube...</Card></div>}
         </motion.div>
       </AnimatePresence>
 
@@ -420,9 +479,8 @@ export default function App() {
         {[
           { id: 'home', icon: Home, label: 'Inicio' },
           { id: 'expenses', icon: PieChart, label: 'Gastos' },
-          { id: 'yearly', icon: Calendar, label: 'Anual' },
           { id: 'debts', icon: CreditCard, label: 'Deudas' },
-          { id: 'settings', icon: Settings, label: 'Más' }
+          { id: 'settings', icon: Settings, label: 'Perfil' }
         ].map(tab => (
           <div key={tab.id} className={`nav-item ${activeTab === tab.id ? 'active' : ''}`} onClick={() => setActiveTab(tab.id)}>
             <tab.icon size={22} />
@@ -434,10 +492,9 @@ export default function App() {
       {/* Modals */}
       <Modal isOpen={showAddFixed} onClose={() => setShowAddFixed(false)} title="Gasto Fijo">
         <form onSubmit={saveFixed}>
-          <input type="text" name="name" className="input-field" placeholder="Nombre (Ej: Arriendo)" defaultValue={editingItem?.name} required style={{ marginBottom: '12px' }} />
+          <input type="text" name="name" className="input-field" placeholder="Nombre" defaultValue={editingItem?.name} required style={{ marginBottom: '12px' }} />
           <input type="number" name="amount" className="input-field" placeholder="Monto" defaultValue={editingItem?.amount} required style={{ marginBottom: '12px' }} />
           <div className="input-group">
-            <label className="input-label">Asignar a Periodo</label>
             <select name="period" className="input-field" defaultValue={editingItem?.period || selectedPeriod}>
               <option value="full">Todo el Mes</option>
               <option value="q1">1° Quincena</option>
@@ -456,17 +513,17 @@ export default function App() {
         <form onSubmit={saveVar}>
           <input type="text" name="name" className="input-field" placeholder="Descripción" defaultValue={editingItem?.name} required style={{ marginBottom: '12px' }} />
           <input type="number" name="amount" className="input-field" placeholder="Monto" defaultValue={editingItem?.amount} required style={{ marginBottom: '12px' }} />
-          <button className="btn-primary" style={{ width: '100%' }}>Guardar Gasto</button>
+          <button className="btn-primary" style={{ width: '100%' }}>Guardar</button>
         </form>
       </Modal>
 
-      <Modal isOpen={showAddDebt} onClose={() => setShowAddDebt(false)} title="Gestionar Deuda">
+      <Modal isOpen={showAddDebt} onClose={() => setShowAddDebt(false)} title="Deuda">
         <form onSubmit={saveDebt}>
-          <input type="text" name="name" className="input-field" placeholder="Entidad / Nombre" defaultValue={editingItem?.name} required style={{ marginBottom: '12px' }} />
+          <input type="text" name="name" className="input-field" placeholder="Nombre" defaultValue={editingItem?.name} required style={{ marginBottom: '12px' }} />
           <input type="number" name="total" className="input-field" placeholder="Monto Total" defaultValue={editingItem?.totalAmount} required style={{ marginBottom: '12px' }} />
-          <input type="number" name="payment" className="input-field" placeholder="Cuota Mensual" defaultValue={editingItem?.monthlyPayment} required style={{ marginBottom: '12px' }} />
-          <input type="number" name="remaining" className="input-field" placeholder="Saldo Pendiente" defaultValue={editingItem?.remaining} required style={{ marginBottom: '12px' }} />
-          <button className="btn-primary" style={{ width: '100%' }}>Guardar Deuda</button>
+          <input type="number" name="payment" className="input-field" placeholder="Cuota" defaultValue={editingItem?.monthlyPayment} required style={{ marginBottom: '12px' }} />
+          <input type="number" name="remaining" className="input-field" placeholder="Restante" defaultValue={editingItem?.remaining} required style={{ marginBottom: '12px' }} />
+          <button className="btn-primary" style={{ width: '100%' }}>Guardar</button>
         </form>
       </Modal>
     </div>
