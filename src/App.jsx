@@ -135,7 +135,12 @@ export default function App() {
     if (!user) return;
 
     const unsubProfile = onSnapshot(doc(db, 'users', user.uid), (doc) => {
-      if (doc.exists()) setProfile(doc.data().profile || { salary: 2500000, frequency: 'monthly' });
+      if (doc.exists()) {
+        const data = doc.data();
+        setProfile(data.profile || { salary: 2500000, frequency: 'monthly' });
+        // Si el usuario tiene un nombre guardado, lo guardamos en el estado del usuario para mostrarlo
+        setUser(prev => ({ ...prev, displayName: data.name }));
+      }
     });
 
     const unsubData = onSnapshot(doc(db, 'data', user.uid), (doc) => {
@@ -458,8 +463,10 @@ export default function App() {
       <header className="header">
         <h2 style={{ fontWeight: '800' }}>SmartDebt</h2>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Hola!</span>
-          <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'var(--accent-color)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <span style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', fontWeight: '500' }}>
+            Hola, {user?.displayName?.split(' ')[0] || '!'}
+          </span>
+          <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'linear-gradient(135deg, var(--accent-color), #818cf8)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 12px rgba(99, 102, 241, 0.3)' }}>
             <User size={18} color="white" />
           </div>
         </div>
