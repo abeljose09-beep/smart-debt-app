@@ -119,6 +119,7 @@ export default function App() {
   const [showAddFixed, setShowAddFixed] = useState(false);
   const [showAddVar, setShowAddVar] = useState(false);
   const [showAddDebt, setShowAddDebt] = useState(false);
+  const [showAddPayment, setShowAddPayment] = useState(false);
   const [editingItem, setEditingItem] = useState(null);
   const [error, setError] = useState('');
 
@@ -251,11 +252,41 @@ export default function App() {
       name: fd.get('name'),
       totalAmount: Number(fd.get('total')),
       monthlyPayment: Number(fd.get('payment')),
-      remaining: Number(fd.get('remaining'))
+      remaining: Number(fd.get('remaining')),
+      payments: editingItem?.payments || []
     };
     const newList = editingItem ? debts.map(i => i.id === item.id ? item : i) : [...debts, item];
     await updateFirestore({ debts: newList });
     setShowAddDebt(false);
+  };
+
+  const savePayment = async (e) => {
+    e.preventDefault();
+    if (!editingItem) return;
+    const fd = new FormData(e.target);
+    const paymentAmount = Number(fd.get('amount'));
+    
+    const payment = {
+      id: Date.now(),
+      amount: paymentAmount,
+      date: new Date().toISOString().split('T')[0],
+      monthYear: currentMonthYear
+    };
+
+    const updatedDebts = debts.map(debt => {
+      if (debt.id === editingItem.id) {
+        return {
+          ...debt,
+          remaining: debt.remaining - paymentAmount,
+          payments: [...(debt.payments || []), payment]
+        };
+      }
+      return debt;
+    });
+
+    await updateFirestore({ debts: updatedDebts });
+    setShowAddPayment(false);
+    setEditingItem(null);
   };
 
   const deleteItem = async (id, type) => {
@@ -407,20 +438,47 @@ export default function App() {
         </button>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-        {debts.map(debt => (
-          <motion.div key={debt.id} className="glass-card" onClick={() => { setEditingItem(debt); setShowAddDebt(true); }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
-              <h4 style={{ fontWeight: '700' }}>{debt.name}</h4>
-              <button onClick={(e) => { e.stopPropagation(); deleteItem(debt.id, 'debt'); }} style={{ background: 'none', border: 'none', color: 'var(--danger)' }}>
-                <Trash2 size={18} />
-              </button>
-            </div>
-            <div className="grid-2">
-              <div><p style={{ fontSize: '0.7rem' }}>Faltante</p><p className="currency">{formatCurrency(debt.remaining)}</p></div>
-              <div><p style={{ fontSize: '0.7rem' }}>Cuota</p><p className="currency" style={{ color: 'var(--danger)' }}>{formatCurrency(debt.monthlyPayment)}</p></div>
-            </div>
-          </motion.div>
-        ))}
+        {debts.map(debt => {
+          const progress = ((debt.totalAmount - debt.remaining) / debt.totalAmount) * 100;
+          return (
+            <motion.div key={debt.id} className="glass-card">
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
+                <h4 style={{ fontWeight: '700' }} onClick={() => { setEditingItem(debt); setShowAddDebt(true); }}>{debt.name}</h4>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button className="btn-secondary" style={{ padding: '4px 8px', fontSize: '0.7rem' }} onClick={() => { setEditingItem(debt); setShowAddPayment(true); }}>
+                    Abonar
+                  </button>
+                  <button onClick={(e) => { e.stopPropagation(); deleteItem(debt.id, 'debt'); }} style={{ background: 'none', border: 'none', color: 'var(--danger)' }}>
+                    <Trash2 size={18} />
+                  </button>
+                </div>
+              </div>
+              
+              <div className="grid-2" style={{ marginBottom: '16px' }}>
+                <div><p style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Faltante</p><p className="currency" style={{ fontWeight: '700' }}>{formatCurrency(debt.remaining)}</p></div>
+                <div><p style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Cuota Sugerida</p><p className="currency" style={{ color: 'var(--danger)' }}>{formatCurrency(debt.monthlyPayment)}</p></div>
+              </div>
+
+              {/* Progress Bar */}
+              <div style={{ width: '100%', height: '6px', background: 'var(--surface-color)', borderRadius: '3px', marginBottom: '8px' }}>
+                <div style={{ width: `${Math.min(100, Math.max(0, progress))}%`, height: '100%', background: 'var(--accent-color)', borderRadius: '3px', transition: 'width 0.5s ease-out' }}></div>
+              </div>
+              <p style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', textAlign: 'right' }}>{Math.round(progress)}% pagado</p>
+              
+              {debt.payments && debt.payments.length > 0 && (
+                <div style={{ marginTop: '16px', borderTop: '1px solid var(--border-color)', paddingTop: '12px' }}>
+                  <p style={{ fontSize: '0.75rem', fontWeight: '600', marginBottom: '8px' }}>Últimos Abonos</p>
+                  {debt.payments.slice(-3).reverse().map(p => (
+                    <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', marginBottom: '4px', opacity: 0.8 }}>
+                      <span>{p.date}</span>
+                      <span style={{ color: 'var(--success)' }}>+{formatCurrency(p.amount)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </motion.div>
+          );
+        })}
       </div>
     </div>
   );
@@ -526,11 +584,19 @@ export default function App() {
 
       <Modal isOpen={showAddDebt} onClose={() => setShowAddDebt(false)} title="Deuda">
         <form onSubmit={saveDebt}>
-          <input type="text" name="name" className="input-field" placeholder="Nombre" defaultValue={editingItem?.name} required style={{ marginBottom: '12px' }} />
-          <input type="number" name="total" className="input-field" placeholder="Monto Total" defaultValue={editingItem?.totalAmount} required style={{ marginBottom: '12px' }} />
-          <input type="number" name="payment" className="input-field" placeholder="Cuota" defaultValue={editingItem?.monthlyPayment} required style={{ marginBottom: '12px' }} />
-          <input type="number" name="remaining" className="input-field" placeholder="Restante" defaultValue={editingItem?.remaining} required style={{ marginBottom: '12px' }} />
+          <input type="text" name="name" className="input-field" placeholder="Nombre (Ej: Banco)" defaultValue={editingItem?.name} required style={{ marginBottom: '12px' }} />
+          <input type="number" name="total" className="input-field" placeholder="Monto Inicial" defaultValue={editingItem?.totalAmount} required style={{ marginBottom: '12px' }} />
+          <input type="number" name="payment" className="input-field" placeholder="Cuota Mensual" defaultValue={editingItem?.monthlyPayment} required style={{ marginBottom: '12px' }} />
+          <input type="number" name="remaining" className="input-field" placeholder="Saldo Actual" defaultValue={editingItem?.remaining} required style={{ marginBottom: '12px' }} />
           <button className="btn-primary" style={{ width: '100%' }}>Guardar</button>
+        </form>
+      </Modal>
+
+      <Modal isOpen={showAddPayment} onClose={() => setShowAddPayment(false)} title={`Abonar a ${editingItem?.name}`}>
+        <form onSubmit={savePayment}>
+          <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '16px' }}>Registra un pago para reducir el saldo pendiente.</p>
+          <input type="number" name="amount" className="input-field" placeholder="Monto del Abono" defaultValue={editingItem?.monthlyPayment} required style={{ marginBottom: '20px' }} />
+          <button className="btn-primary" style={{ width: '100%' }}>Confirmar Pago</button>
         </form>
       </Modal>
     </div>
