@@ -162,7 +162,6 @@ export default function App() {
         const data = doc.data();
         setProfile(data.profile || { salary: 2500000, frequency: 'monthly' });
         setUserName(data.name || '');
-        setTheme(data.theme || 'default');
       }
     });
 
@@ -175,6 +174,7 @@ export default function App() {
         setDebts(data.debts || []);
         setGoals(data.goals || []);
         setUserPin(data.pin || null);
+        setTheme(data.theme || 'default');
         if (!data.pin) setIsLocked(false);
       }
     });
@@ -295,8 +295,32 @@ export default function App() {
       amount: Number(fd.get('amount')),
       isSavings: fd.get('isSavings') === 'on',
       period: fd.get('period'),
+      debtId: fd.get('debtId') || null,
       monthYear: currentMonthYear
     };
+
+    // Si está vinculado a una deuda, registrar el abono
+    if (item.debtId) {
+      const payment = {
+        id: Date.now(),
+        amount: item.amount,
+        date: new Date().toISOString().split('T')[0],
+        monthYear: currentMonthYear,
+        period: item.period === 'full' ? (new Date().getDate() <= 15 ? 'q1' : 'q2') : item.period
+      };
+      const updatedDebts = debts.map(debt => {
+        if (debt.id === item.debtId) {
+          return {
+            ...debt,
+            remaining: debt.remaining - item.amount,
+            payments: [...(debt.payments || []), payment]
+          };
+        }
+        return debt;
+      });
+      await updateFirestore({ debts: updatedDebts });
+    }
+
     const newList = editingItem ? fixedExpenses.map(i => i.id === item.id ? item : i) : [...fixedExpenses, item];
     await updateFirestore({ fixedExpenses: newList });
     setShowAddFixed(false);
@@ -309,10 +333,34 @@ export default function App() {
       id: editingItem?.id || Date.now(),
       name: fd.get('name'),
       amount: Number(fd.get('amount')),
-      period: selectedPeriod === 'full' ? 'q1' : selectedPeriod,
+      period: selectedPeriod === 'full' ? (new Date().getDate() <= 15 ? 'q1' : 'q2') : selectedPeriod,
+      debtId: fd.get('debtId') || null,
       monthYear: currentMonthYear,
       date: new Date().toISOString().split('T')[0]
     };
+
+    // Si está vinculado a una deuda, registrar el abono
+    if (item.debtId) {
+      const payment = {
+        id: Date.now(),
+        amount: item.amount,
+        date: item.date,
+        monthYear: currentMonthYear,
+        period: item.period
+      };
+      const updatedDebts = debts.map(debt => {
+        if (debt.id === item.debtId) {
+          return {
+            ...debt,
+            remaining: debt.remaining - item.amount,
+            payments: [...(debt.payments || []), payment]
+          };
+        }
+        return debt;
+      });
+      await updateFirestore({ debts: updatedDebts });
+    }
+
     const newList = editingItem ? variableExpenses.map(i => i.id === item.id ? item : i) : [...variableExpenses, item];
     await updateFirestore({ variableExpenses: newList });
     setShowAddVar(false);
@@ -822,9 +870,9 @@ export default function App() {
               <motion.div 
                 key={t.id}
                 whileTap={{ scale: 0.95 }}
-                onClick={async () => {
+                onClick={() => {
                   setTheme(t.id);
-                  await setDoc(doc(db, 'users', user.uid), { theme: t.id }, { merge: true });
+                  updateFirestore({ theme: t.id });
                 }}
                 style={{
                   padding: '16px',
@@ -1058,6 +1106,14 @@ export default function App() {
               <option value="q2">2° Quincena</option>
             </select>
           </div>
+          <div className="input-group">
+            <select name="debtId" className="input-field" defaultValue={editingItem?.debtId || ""}>
+              <option value="">Vincular a Deuda (Opcional)</option>
+              {debts.map(d => (
+                <option key={d.id} value={d.id}>{d.name} (Faltante: {formatCurrency(d.remaining)})</option>
+              ))}
+            </select>
+          </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '20px' }}>
             <input type="checkbox" name="isSavings" id="isSavings" defaultChecked={editingItem?.isSavings} />
             <label htmlFor="isSavings">¿Es Ahorro?</label>
@@ -1070,6 +1126,14 @@ export default function App() {
         <form onSubmit={saveVar}>
           <input type="text" name="name" className="input-field" placeholder="Descripción" defaultValue={editingItem?.name} required style={{ marginBottom: '12px' }} />
           <input type="number" name="amount" className="input-field" placeholder="Monto" defaultValue={editingItem?.amount} required style={{ marginBottom: '12px' }} />
+          <div className="input-group">
+            <select name="debtId" className="input-field" defaultValue={editingItem?.debtId || ""}>
+              <option value="">Vincular a Deuda (Opcional)</option>
+              {debts.map(d => (
+                <option key={d.id} value={d.id}>{d.name} (Faltante: {formatCurrency(d.remaining)})</option>
+              ))}
+            </select>
+          </div>
           <button className="btn-primary" style={{ width: '100%' }}>Guardar</button>
         </form>
       </Modal>
