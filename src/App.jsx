@@ -296,6 +296,7 @@ export default function App() {
       isSavings: fd.get('isSavings') === 'on',
       period: fd.get('period'),
       debtId: fd.get('debtId') || null,
+      goalId: fd.get('goalId') || null,
       monthYear: currentMonthYear
     };
 
@@ -319,6 +320,14 @@ export default function App() {
         return debt;
       });
       await updateFirestore({ debts: updatedDebts });
+    }
+
+    // Si es un ahorro y está vinculado a una meta
+    if (item.isSavings && item.goalId) {
+      const updatedGoals = goals.map(g => 
+        g.id === Number(item.goalId) ? { ...g, current: g.current + item.amount } : g
+      );
+      await updateFirestore({ goals: updatedGoals });
     }
 
     const newList = editingItem ? fixedExpenses.map(i => i.id === item.id ? item : i) : [...fixedExpenses, item];
@@ -1111,6 +1120,14 @@ export default function App() {
               <option value="">Vincular a Deuda (Opcional)</option>
               {debts.map(d => (
                 <option key={d.id} value={d.id}>{d.name} (Faltante: {formatCurrency(d.remaining)})</option>
+              ))}
+            </select>
+          </div>
+          <div className="input-group">
+            <select name="goalId" className="input-field" defaultValue={editingItem?.goalId || ""}>
+              <option value="">Vincular a Meta de Ahorro (Opcional)</option>
+              {goals.map(g => (
+                <option key={g.id} value={g.id}>{g.icon} {g.name} ({Math.round(g.target > 0 ? (g.current/g.target)*100 : 0)}%)</option>
               ))}
             </select>
           </div>
