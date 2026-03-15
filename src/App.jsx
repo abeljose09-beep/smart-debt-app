@@ -246,10 +246,16 @@ export default function App() {
   const monthlySalary = profile.frequency === 'quincenal' ? profile.salary * 2 : profile.salary;
   const periodSalary = selectedPeriod === 'full' ? monthlySalary : (profile.frequency === 'quincenal' ? profile.salary : monthlySalary / 2);
 
-  const totalFixed = currentFixed.reduce((sum, item) => sum + Number(item.amount), 0);
+  const totalFixed = currentFixed
+    .filter(e => !e.debtId)
+    .reduce((sum, item) => sum + Number(item.amount), 0);
+    
   const totalOtherIncome = currentOtherIncome.reduce((sum, item) => sum + Number(item.amount), 0);
   const totalSavings = currentFixed.filter(e => e.isSavings).reduce((sum, item) => sum + Number(item.amount), 0);
-  const totalVar = currentVariable.reduce((sum, item) => sum + Number(item.amount), 0);
+  
+  const totalVar = currentVariable
+    .filter(e => !e.debtId)
+    .reduce((sum, item) => sum + Number(item.amount), 0);
   
   const realDebtPayments = useMemo(() => {
     let sum = 0;
@@ -300,6 +306,9 @@ export default function App() {
       monthYear: currentMonthYear
     };
 
+    let updatedDebts = [...debts];
+    let updatedGoals = [...goals];
+
     // Si está vinculado a una deuda, registrar el abono
     if (item.debtId) {
       const payment = {
@@ -309,7 +318,7 @@ export default function App() {
         monthYear: currentMonthYear,
         period: item.period === 'full' ? (new Date().getDate() <= 15 ? 'q1' : 'q2') : item.period
       };
-      const updatedDebts = debts.map(debt => {
+      updatedDebts = updatedDebts.map(debt => {
         if (debt.id === Number(item.debtId)) {
           return {
             ...debt,
@@ -319,19 +328,23 @@ export default function App() {
         }
         return debt;
       });
-      await updateFirestore({ debts: updatedDebts });
     }
 
     // Si es un ahorro y está vinculado a una meta
     if (item.isSavings && item.goalId) {
-      const updatedGoals = goals.map(g => 
+      updatedGoals = updatedGoals.map(g => 
         g.id === Number(item.goalId) ? { ...g, current: g.current + item.amount } : g
       );
-      await updateFirestore({ goals: updatedGoals });
     }
 
     const newList = editingItem ? fixedExpenses.map(i => i.id === item.id ? item : i) : [...fixedExpenses, item];
-    await updateFirestore({ fixedExpenses: newList });
+    
+    await updateFirestore({ 
+      fixedExpenses: newList,
+      debts: updatedDebts,
+      goals: updatedGoals
+    });
+    
     setShowAddFixed(false);
   };
 
@@ -348,6 +361,8 @@ export default function App() {
       date: new Date().toISOString().split('T')[0]
     };
 
+    let updatedDebts = [...debts];
+
     // Si está vinculado a una deuda, registrar el abono
     if (item.debtId) {
       const payment = {
@@ -357,7 +372,7 @@ export default function App() {
         monthYear: currentMonthYear,
         period: item.period
       };
-      const updatedDebts = debts.map(debt => {
+      updatedDebts = updatedDebts.map(debt => {
         if (debt.id === Number(item.debtId)) {
           return {
             ...debt,
@@ -367,11 +382,15 @@ export default function App() {
         }
         return debt;
       });
-      await updateFirestore({ debts: updatedDebts });
     }
 
     const newList = editingItem ? variableExpenses.map(i => i.id === item.id ? item : i) : [...variableExpenses, item];
-    await updateFirestore({ variableExpenses: newList });
+    
+    await updateFirestore({ 
+      variableExpenses: newList,
+      debts: updatedDebts
+    });
+    
     setShowAddVar(false);
   };
 
