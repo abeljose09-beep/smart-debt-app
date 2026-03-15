@@ -15,6 +15,43 @@
   --border-color: rgba(255, 255, 255, 0.1);
 }
 
+.theme-emerald {
+  --bg-color: #061d12;
+  --surface-color: #0d2818;
+  --surface-hover: #153a26;
+  --accent-color: #10b981;
+  --accent-glow: rgba(16, 185, 129, 0.2);
+  --text-primary: #f0fff4;
+  --text-secondary: #a7f3d0;
+  --card-bg: rgba(13, 40, 24, 0.6);
+  --border-color: rgba(16, 185, 129, 0.1);
+}
+
+.theme-midnight {
+  --bg-color: #0a061a;
+  --surface-color: #1a0b3b;
+  --surface-hover: #261254;
+  --accent-color: #a855f7;
+  --accent-glow: rgba(168, 85, 247, 0.2);
+  --text-primary: #f5f3ff;
+  --text-secondary: #ddd6fe;
+  --card-bg: rgba(26, 11, 59, 0.6);
+  --border-color: rgba(168, 85, 247, 0.1);
+}
+
+.theme-slate {
+  --bg-color: #0f172a;
+  --surface-color: #1e293b;
+  --surface-hover: #334155;
+  --accent-color: #f43f5e;
+  --accent-glow: rgba(244, 63, 94, 0.2);
+  --text-primary: #f8fafc;
+  --text-secondary: #91a3b8;
+  --card-bg: rgba(30, 41, 59, 0.6);
+  --border-color: rgba(244, 63, 94, 0.1);
+}
+
+
 * {
   margin: 0;
   padding: 0;
@@ -35,7 +72,8 @@ body {
   min-height: 100vh;
   display: flex;
   justify-content: center;
-  background: radial-gradient(circle at top right, #1e1b4b 0%, #050810 50%);
+  background: radial-gradient(circle at top right, var(--surface-color) 0%, var(--bg-color) 100%);
+  transition: background 0.5s ease;
 }
 
 .app-container {
@@ -49,6 +87,7 @@ body {
   box-shadow: 0 0 40px rgba(0, 0, 0, 0.5);
   border-left: 1px solid var(--border-color);
   border-right: 1px solid var(--border-color);
+  transition: all 0.5s ease;
 }
 
 .glass-card {
@@ -238,4 +277,43 @@ body {
   box-shadow: 0 8px 25px var(--accent-glow);
   cursor: pointer;
   z-index: 900;
+}
+
+.shadow-glow {
+  box-shadow: 0 0 15px var(--accent-glow);
+}
+
+.pulse-warning {
+  animation: pulse-warning 2s infinite;
+}
+
+@keyframes pulse-warning {
+  0% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.2); }
+  70% { box-shadow: 0 0 0 10px rgba(245, 158, 11, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+}
+
+.pulse-danger {
+  animation: pulse-danger 2s infinite;
+}
+
+@keyframes pulse-danger {
+  0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.2); }
+  70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+}
+
+.progress-container {
+  width: 100%;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 10px 0;
+}
+
+.progress-bar {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
 }

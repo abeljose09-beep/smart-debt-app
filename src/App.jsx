@@ -16,7 +16,9 @@ import {
   Save,
   User,
   LogOut,
-  Phone
+  Phone,
+  Palette,
+  CheckCircle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { auth, db } from './firebase';
@@ -32,6 +34,17 @@ import {
   getDoc, 
   onSnapshot 
 } from 'firebase/firestore';
+import { 
+  PieChart as RePieChart, 
+  Pie, 
+  Cell, 
+  ResponsiveContainer, 
+  Tooltip as ReTooltip,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis
+} from 'recharts';
 
 // --- Utils ---
 const formatCurrency = (amount) => {
@@ -114,14 +127,20 @@ export default function App() {
   const [fixedExpenses, setFixedExpenses] = useState([]);
   const [variableExpenses, setVariableExpenses] = useState([]);
   const [debts, setDebts] = useState([]);
+  const [theme, setTheme] = useState('default');
 
   // -- UI States --
   const [showAddFixed, setShowAddFixed] = useState(false);
   const [showAddVar, setShowAddVar] = useState(false);
   const [showAddDebt, setShowAddDebt] = useState(false);
   const [showAddPayment, setShowAddPayment] = useState(false);
+  const [showAddGoal, setShowAddGoal] = useState(false);
   const [editingItem, setEditingItem] = useState(null);
   const [error, setError] = useState('');
+  const [paymentSuccess, setPaymentSuccess] = useState(null); 
+  const [goals, setGoals] = useState([]);
+  const [isLocked, setIsLocked] = useState(true);
+  const [userPin, setUserPin] = useState(null);
 
   // --- Firebase Auth ---
   useEffect(() => {
@@ -141,6 +160,7 @@ export default function App() {
         const data = doc.data();
         setProfile(data.profile || { salary: 2500000, frequency: 'monthly' });
         setUserName(data.name || '');
+        setTheme(data.theme || 'default');
       }
     });
 
@@ -150,6 +170,9 @@ export default function App() {
         setFixedExpenses(data.fixedExpenses || []);
         setVariableExpenses(data.variableExpenses || []);
         setDebts(data.debts || []);
+        setGoals(data.goals || []);
+        setUserPin(data.pin || null);
+        if (!data.pin) setIsLocked(false);
       }
     });
 
@@ -188,6 +211,17 @@ export default function App() {
     }
   };
 
+  const requestNotificationPermission = async () => {
+    if (!("Notification" in window)) {
+      alert("Este navegador no soporta notificaciones de escritorio");
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    if (permission === "granted") {
+      new Notification("SmartDebt", { body: "¡Notificaciones activadas correctamente!" });
+    }
+  };
+
   // --- Calculations ---
   const currentMonthYear = `${new Date().getFullYear()}-${selectedMonth}`;
   
@@ -210,6 +244,25 @@ export default function App() {
   const totalDebtPayments = debts.reduce((sum, item) => sum + Number(item.monthlyPayment), 0);
   
   const totalRemaining = periodSalary - totalFixed - totalVar - (selectedPeriod === 'full' ? totalDebtPayments : totalDebtPayments/2);
+
+  const allTransactions = useMemo(() => {
+    const list = [];
+    fixedExpenses.forEach(e => list.push({ ...e, type: 'fijo', icon: TrendingDown, color: 'var(--danger)' }));
+    variableExpenses.forEach(e => list.push({ ...e, type: 'variable', icon: TrendingUp, color: 'var(--warning)' }));
+    debts.forEach(d => {
+      (d.payments || []).forEach(p => {
+        list.push({ ...p, name: `Abono: ${d.name}`, type: 'deuda', icon: CreditCard, color: 'var(--success)' });
+      });
+    });
+    return list.sort((a, b) => new Date(b.date || b.monthYear) - new Date(a.date || a.monthYear));
+  }, [fixedExpenses, variableExpenses, debts]);
+
+  const chartData = useMemo(() => [
+    { name: 'Fijos', value: totalFixed, color: 'var(--danger)' },
+    { name: 'Variables', value: totalVar, color: 'var(--warning)' },
+    { name: 'Deudas', value: totalDebtPayments, color: 'var(--accent-color)' },
+    { name: 'Ahorro', value: totalSavings, color: 'var(--success)' }
+  ].filter(d => d.value > 0), [totalFixed, totalVar, totalDebtPayments, totalSavings]);
 
   // --- Handlers ---
   const saveFixed = async (e) => {
@@ -253,6 +306,7 @@ export default function App() {
       totalAmount: Number(fd.get('total')),
       monthlyPayment: Number(fd.get('payment')),
       remaining: Number(fd.get('remaining')),
+      dueDate: Number(fd.get('dueDate')), // Día del mes
       payments: editingItem?.payments || []
     };
     const newList = editingItem ? debts.map(i => i.id === item.id ? item : i) : [...debts, item];
@@ -286,6 +340,11 @@ export default function App() {
 
     await updateFirestore({ debts: updatedDebts });
     setShowAddPayment(false);
+    
+    // Payment feedback
+    setPaymentSuccess({ name: editingItem.name });
+    setTimeout(() => setPaymentSuccess(null), 5000); 
+
     setEditingItem(null);
   };
 
@@ -301,6 +360,48 @@ export default function App() {
       newList = debts.filter(i => i.id !== id);
       await updateFirestore({ debts: newList });
     }
+  };
+
+  const saveGoal = async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const goal = {
+      id: Date.now(),
+      name: fd.get('name'),
+      target: Number(fd.get('target')),
+      current: Number(fd.get('current')),
+      icon: fd.get('icon') || '🎯'
+    };
+    await updateFirestore({ goals: [...goals, goal] });
+    setShowAddGoal(false);
+  };
+
+  const deleteGoal = async (id) => {
+    await updateFirestore({ goals: goals.filter(g => g.id !== id) });
+  };
+
+  const updateGoalProgress = async (id, amount) => {
+    const updated = goals.map(g => g.id === id ? { ...g, current: g.current + amount } : g);
+    await updateFirestore({ goals: updated });
+  };
+
+  // --- Security Logic ---
+  const handleSetPin = async (pin) => {
+    await updateFirestore({ pin });
+    setUserPin(pin);
+  };
+
+  // --- Suggestion Logic ---
+  const calculateDebtSuggestion = (debt) => {
+    // Objetivo: Salir de la deuda en máximo 12 meses o mantener la cuota actual si es muy alta
+    const targetMonths = 12;
+    const recommendedPayment = Math.ceil(debt.remaining / targetMonths);
+    
+    // El usuario no debería gastar más del 30% de su saldo libre extra en una sola deuda
+    const extraCapacity = totalRemaining * 0.3;
+    const suggestion = Math.max(debt.monthlyPayment, Math.min(recommendedPayment, debt.monthlyPayment + extraCapacity));
+    
+    return suggestion;
   };
 
   // --- Views ---
@@ -358,13 +459,68 @@ export default function App() {
 
   const HomeView = () => (
     <div className="scroll-area">
+      {paymentSuccess && (
+        <div style={{ background: 'var(--success)', color: 'white', padding: '16px', borderRadius: '12px', marginBottom: '20px', fontWeight: 'bold', textAlign: 'center' }}>
+          ¡Pagado! {paymentSuccess.name}
+        </div>
+      )}
       <TimeSelector />
       <div style={{ marginBottom: '32px', textAlign: 'center' }}>
-        <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>{selectedPeriod === 'full' ? 'Saldo del Mes' : `Saldo ${selectedPeriod.toUpperCase()}`}</p>
+        <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>{selectedPeriod === 'full' ? 'Saldo Mensual' : `Saldo ${selectedPeriod.toUpperCase()}`}</p>
         <h1 style={{ fontSize: '2.5rem', fontWeight: '800' }} className="currency">{formatCurrency(totalRemaining)}</h1>
-        <div style={{ marginTop: '8px' }}>
-          <span className="badge badge-info">Ingreso: {formatCurrency(periodSalary)}</span>
+        <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+          <span className="badge badge-info shadow-glow">INGRESO: {formatCurrency(periodSalary)}</span>
+          
+          <div style={{ width: '100%', maxWidth: '250px', marginTop: '15px' }}>
+            <div className="progress-container">
+              <div 
+                className="progress-bar" 
+                style={{ 
+                  width: `${Math.min(100, ((totalFixed + totalVar) / periodSalary) * 100)}%`,
+                  background: ((totalFixed + totalVar) / periodSalary) > 0.9 ? 'var(--danger)' : 'var(--accent-color)'
+                }}
+              ></div>
+            </div>
+            <p style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', marginTop: '5px' }}>
+              Presupuesto consumido: {Math.round(((totalFixed + totalVar) / periodSalary) * 100)}%
+            </p>
+          </div>
         </div>
+      </div>
+
+      <div style={{ position: 'relative', height: '220px', marginBottom: '10px' }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <RePieChart>
+            <Pie
+              data={chartData}
+              innerRadius={65}
+              outerRadius={85}
+              paddingAngle={5}
+              dataKey="value"
+              animationBegin={0}
+              animationDuration={1500}
+            >
+              {chartData.map((entry, index) => (
+                <Cell key={`cell-${index}`} fill={entry.color} stroke="none" />
+              ))}
+            </Pie>
+            <ReTooltip 
+              contentStyle={{ background: 'var(--surface-color)', border: '1px solid var(--border-color)', borderRadius: '12px', fontSize: '0.8rem' }}
+              itemStyle={{ color: 'white' }}
+              formatter={(value) => formatCurrency(value)}
+            />
+          </RePieChart>
+        </ResponsiveContainer>
+        {/* Leyenda discreta central opcional o inferior */}
+      </div>
+
+      <div style={{ display: 'flex', justifyContent: 'center', flexWrap: 'wrap', gap: '15px', marginBottom: '32px', padding: '0 10px' }}>
+        {chartData.map((item, index) => (
+          <div key={index} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: item.color }}></div>
+            <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', fontWeight: '500' }}>{item.name}</span>
+          </div>
+        ))}
       </div>
 
       <div className="grid-2">
@@ -375,6 +531,46 @@ export default function App() {
           <p className="currency" style={{ color: 'var(--warning)' }}>-{formatCurrency(totalVar)}</p>
         </Card>
       </div>
+
+      {/* --- Notificaciones de Deudas Próximas --- */}
+      {debts.filter(d => d.remaining > 0).length > 0 && (
+        <div style={{ marginBottom: '24px' }}>
+          <h3 style={{ fontSize: '1.1rem', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <AlertCircle size={18} color="var(--warning)" /> Recordatorios
+          </h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            {debts
+              .filter(d => d.remaining > 0 && d.dueDate)
+              .sort((a, b) => (a.dueDate || 31) - (b.dueDate || 31))
+              .slice(0, 3)
+              .map(debt => {
+                const today = new Date().getDate();
+                const diff = (debt.dueDate || 0) - today;
+                const isToday = diff === 0;
+                const isNear = diff > 0 && diff <= 5;
+                const isOverdue = diff < 0;
+                
+                const pulseClass = isOverdue ? 'pulse-danger' : (isToday || isNear ? 'pulse-warning' : '');
+
+                return (
+                  <div key={debt.id} className={`glass-card ${pulseClass}`} style={{ padding: '12px 16px', margin: 0, borderLeft: `4px solid ${isOverdue ? 'var(--danger)' : isNear ? 'var(--warning)' : 'var(--accent-color)'}` }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div>
+                        <p style={{ fontWeight: '600', fontSize: '0.9rem' }}>{debt.name}</p>
+                        <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                          {isOverdue ? 'Venció el día ' : isToday ? '¡Paga Hoy! día ' : 'Paga el día '} {debt.dueDate}
+                        </p>
+                      </div>
+                      <span className="badge" style={{ background: isOverdue ? 'rgba(239, 68, 68, 0.1)' : (isToday || isNear) ? 'rgba(245, 158, 11, 0.1)' : 'rgba(99, 102, 241, 0.1)', color: isOverdue ? 'var(--danger)' : (isToday || isNear) ? 'var(--warning)' : 'var(--accent-color)' }}>
+                        {formatCurrency(debt.monthlyPayment)}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+          </div>
+        </div>
+      )}
 
       <Card title="Ahorros" icon={Wallet}>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
@@ -411,7 +607,7 @@ export default function App() {
               <p className="list-item-title">{item.name}</p>
               <p className="list-item-sub">
                 {item.isSavings ? 'Ahorro • ' : ''}
-                {item.period === 'q1' ? '1° Quin' : item.period === 'q2' ? '2° Quin' : 'Mensual'}
+                {item.period === 'q1' ? '1° Quincena' : item.period === 'q2' ? '2° Quincena' : 'Mensual'}
               </p>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
@@ -456,7 +652,25 @@ export default function App() {
               
               <div className="grid-2" style={{ marginBottom: '16px' }}>
                 <div><p style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Faltante</p><p className="currency" style={{ fontWeight: '700' }}>{formatCurrency(debt.remaining)}</p></div>
-                <div><p style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Cuota Sugerida</p><p className="currency" style={{ color: 'var(--danger)' }}>{formatCurrency(debt.monthlyPayment)}</p></div>
+                <div>
+                  <p style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Día de Pago: <span style={{ color: 'var(--accent-color)', fontWeight: '600' }}>{debt.dueDate || '-'}</span></p>
+                  <p className="currency" style={{ color: 'var(--danger)' }}>{formatCurrency(debt.monthlyPayment)}</p>
+                </div>
+              </div>
+
+              <div style={{ background: 'var(--accent-color)10', padding: '12px', borderRadius: '12px', border: '1px solid var(--accent-color)30', marginBottom: '16px', position: 'relative', overflow: 'hidden' }}>
+                <div style={{ position: 'absolute', top: '-10px', right: '-10px', opacity: 0.1, color: 'var(--accent-color)' }}>
+                  <TrendingUp size={40} />
+                </div>
+                <p style={{ fontSize: '0.7rem', color: 'var(--accent-color)', fontWeight: '700', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <TrendingUp size={12} /> Sugerencia de Pago
+                </p>
+                <p style={{ fontSize: '0.9rem', fontWeight: '800', color: 'white' }}>
+                  Abona {formatCurrency(calculateDebtSuggestion(debt))}
+                </p>
+                <p style={{ fontSize: '0.6rem', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: '1.4' }}>
+                  Esta cuota acelerará tu salida de deuda sin comprometer más del 30% de tu saldo disponible.
+                </p>
               </div>
 
               {/* Progress Bar */}
@@ -491,35 +705,216 @@ export default function App() {
 
     return (
       <div className="scroll-area">
-        <h2 style={{ marginBottom: '24px' }}>Ajustes</h2>
+        <h2 style={{ marginBottom: '24px', fontWeight: '800' }}>Configuración</h2>
+        
         <Card title="Perfil Financiero" icon={Settings}>
           <div className="input-group">
             <label className="input-label">Monto de Sueldo</label>
             <input type="number" className="input-field" value={tempSalary} onChange={(e) => setTempSalary(Number(e.target.value))} />
           </div>
           <div className="input-group">
-            <label className="input-label">Frecuencia</label>
+            <label className="input-label">Frecuencia de Pago</label>
             <select className="input-field" value={profile.frequency} onChange={(e) => setProfile({...profile, frequency: e.target.value})}>
               <option value="monthly">Mensual</option>
               <option value="quincenal">Quincenal</option>
             </select>
           </div>
-          <button className="btn-primary" onClick={handleSaveProfile} style={{ width: '100%' }}>Guardar Cambios</button>
+          <button className="btn-primary" onClick={handleSaveProfile} style={{ width: '100%', gap: '10px' }}>
+            <Save size={18} /> Guardar Perfil
+          </button>
         </Card>
-        <button className="btn-secondary" style={{ width: '100%', marginTop: 'auto', color: 'var(--danger)' }} onClick={() => signOut(auth)}>
-          <LogOut size={18} style={{ marginRight: '8px' }} /> Cerrar Sesión
-        </button>
+
+        <Card title="Personalización" subtitle="Elige el estilo visual de tu app" icon={Palette}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+            {[
+              { id: 'default', name: 'Indigo', desc: 'Original', color: '#6366f1' },
+              { id: 'theme-emerald', name: 'Esmeralda', desc: 'Premium', color: '#10b981' },
+              { id: 'theme-midnight', name: 'Media Noche', desc: 'Cyberpunk', color: '#a855f7' },
+              { id: 'theme-slate', name: 'Pizarra', desc: 'Elegante', color: '#f43f5e' }
+            ].map(t => (
+              <motion.div 
+                key={t.id}
+                whileTap={{ scale: 0.95 }}
+                onClick={() => {
+                  setTheme(t.id);
+                  updateFirestore({ theme: t.id });
+                }}
+                style={{
+                  padding: '16px',
+                  borderRadius: '16px',
+                  background: theme === t.id ? 'var(--surface-hover)' : 'rgba(255,255,255,0.03)',
+                  border: `2px solid ${theme === t.id ? t.color : 'transparent'}`,
+                  cursor: 'pointer',
+                  position: 'relative',
+                  overflow: 'hidden',
+                  transition: 'all 0.3s ease'
+                }}
+              >
+                <div style={{ 
+                  width: '12px', height: '12px', borderRadius: '50%', background: t.color, marginBottom: '8px',
+                  boxShadow: `0 0 10px ${t.color}`
+                }}></div>
+                <p style={{ fontWeight: '700', fontSize: '0.9rem', color: theme === t.id ? 'white' : 'var(--text-secondary)' }}>{t.name}</p>
+                <p style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', opacity: 0.7 }}>{t.desc}</p>
+                {theme === t.id && (
+                  <div style={{ position: 'absolute', top: '8px', right: '8px', color: t.color }}>
+                    <CheckCircle size={14} />
+                  </div>
+                )}
+              </motion.div>
+            ))}
+          </div>
+        </Card>
+
+        <div style={{ padding: '0 10px' }}>
+          <button className="btn-primary" style={{ width: '100%', marginBottom: '12px', background: 'rgba(99, 102, 241, 0.1)', color: 'var(--accent-color)', border: '1px solid var(--accent-color)' }} onClick={() => {
+            const p = prompt("Nuevo PIN (4 dígitos):");
+            if (p && p.length === 4) handleSetPin(p);
+            else if (p) alert("El PIN debe ser de 4 dígitos exactos.");
+          }}>
+            <Settings size={18} style={{ marginRight: '8px' }} /> {userPin ? 'Cambiar PIN de Seguridad' : 'Activar PIN de Seguridad'}
+          </button>
+          {userPin && (
+            <button className="btn-secondary" style={{ width: '100%', marginBottom: '12px' }} onClick={() => setIsLocked(true)}>
+              <CheckCircle size={18} style={{ marginRight: '8px' }} /> Bloquear App Ahora
+            </button>
+          )}
+          <button className="btn-secondary" style={{ width: '100%', color: 'var(--danger)', border: '1px solid rgba(239, 68, 68, 0.2)', background: 'rgba(239, 68, 68, 0.05)' }} onClick={() => signOut(auth)}>
+            <LogOut size={18} style={{ marginRight: '8px' }} /> Cerrar Sesión
+          </button>
+          <p style={{ textAlign: 'center', marginTop: '24px', fontSize: '0.7rem', color: 'var(--text-secondary)', opacity: 0.5 }}>
+            SmartDebt v2.1.0 • Hecho con ✨
+          </p>
+        </div>
       </div>
     );
   };
 
+  const GoalsView = () => (
+    <div className="scroll-area">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+        <h2 style={{ fontWeight: '800' }}>Metas de Ahorro</h2>
+        <button className="btn-primary" onClick={() => setShowAddGoal(true)}><Plus size={20} /></button>
+      </div>
+      <div className="grid-2">
+        {goals.map(goal => {
+          const progress = (goal.current / goal.target) * 100;
+          return (
+            <div key={goal.id} className="glass-card" style={{ padding: '16px' }}>
+              <div style={{ fontSize: '1.5rem', marginBottom: '10px' }}>{goal.icon}</div>
+              <p style={{ fontWeight: '700', fontSize: '0.9rem' }}>{goal.name}</p>
+              <p style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginBottom: '12px' }}>
+                {formatCurrency(goal.current)} / {formatCurrency(goal.target)}
+              </p>
+              <div className="progress-container">
+                <div className="progress-bar" style={{ width: `${Math.min(100, progress)}%`, background: 'var(--success)' }}></div>
+              </div>
+              <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+                <button 
+                  className="btn-secondary" 
+                  style={{ padding: '4px', flex: 1, fontSize: '0.7rem' }}
+                  onClick={() => {
+                    const amount = Number(prompt("Monto a ahorrar:"));
+                    if (amount) updateGoalProgress(goal.id, amount);
+                  }}
+                >+ Ahorrar</button>
+                <button onClick={() => deleteGoal(goal.id)} style={{ background: 'none', border: 'none', color: 'var(--danger)' }}><Trash2 size={16} /></button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+
+  const LockScreen = () => {
+    const [input, setInput] = useState('');
+    const handleCheck = () => {
+      if (input === userPin) {
+        setIsLocked(false);
+        setInput('');
+      } else { 
+        alert('PIN Incorrecto'); 
+        setInput(''); 
+      }
+    };
+
+    const addDigit = (digit) => {
+      if (input.length < 4) setInput(prev => prev + digit);
+    };
+
+    return (
+      <div style={{ position: 'fixed', inset: 0, background: 'var(--bg-color)', zIndex: 5000, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '20px' }}>
+        <div style={{ width: '64px', height: '64px', background: 'var(--accent-glow)', borderRadius: '18px', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '24px', color: 'var(--accent-color)', border: '1px solid var(--accent-color)' }}>
+          <Settings size={32} />
+        </div>
+        <h2 style={{ marginBottom: '8px', fontWeight: '800' }} translate="no">SmartDebt</h2>
+        <p style={{ color: 'var(--text-secondary)', marginBottom: '32px', fontSize: '0.9rem' }}>Introduce tu PIN de seguridad</p>
+        
+        <div style={{ display: 'flex', gap: '16px', marginBottom: '40px' }}>
+          {[1, 2, 3, 4].map(i => (
+            <div key={i} style={{ 
+              width: '16px', height: '16px', borderRadius: '50%', 
+              border: '2px solid var(--accent-color)', 
+              background: input.length >= i ? 'var(--accent-color)' : 'transparent',
+              boxShadow: input.length >= i ? '0 0 10px var(--accent-color)' : 'none',
+              transition: 'all 0.2s ease'
+            }}></div>
+          ))}
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '20px' }}>
+          {[1,2,3,4,5,6,7,8,9].map(n => (
+            <button 
+              key={n} 
+              onClick={() => addDigit(String(n))}
+              style={{ width: '70px', height: '70px', borderRadius: '50%', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-color)', color: 'white', fontSize: '1.4rem', fontWeight: '600' }}
+            >{n}</button>
+          ))}
+          <button onClick={() => setInput('')} style={{ width: '70px', height: '70px', borderRadius: '50%', background: 'transparent', border: 'none', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Borrar</button>
+          <button onClick={() => addDigit('0')} style={{ width: '70px', height: '70px', borderRadius: '50%', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-color)', color: 'white', fontSize: '1.4rem', fontWeight: '600' }}>0</button>
+          <button onClick={handleCheck} style={{ width: '70px', height: '70px', borderRadius: '50%', background: 'var(--accent-color)', border: 'none', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <CheckCircle size={24} />
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const HistoryView = () => (
+    <div className="scroll-area">
+      <h2 style={{ marginBottom: '24px', fontWeight: '800' }}>Historial</h2>
+      <div className="glass-card" style={{ padding: 0 }}>
+        {allTransactions.length === 0 ? (
+          <p style={{ padding: '20px', textAlign: 'center', color: 'var(--text-secondary)' }}>No hay movimientos registrados</p>
+        ) : (
+          allTransactions.map((item, idx) => (
+            <div key={idx} className="list-item">
+              <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                <div style={{ background: `${item.color}20`, padding: '8px', borderRadius: '10px', color: item.color }}>
+                  <item.icon size={18} />
+                </div>
+                <div>
+                  <p className="list-item-title">{item.name}</p>
+                  <p className="list-item-sub">{item.date || item.monthYear} • {item.type}</p>
+                </div>
+              </div>
+              <span className="currency" style={{ fontWeight: '700' }}>{formatCurrency(item.amount)}</span>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+
   if (loading) return null;
   if (!user) return <AuthView />;
+  if (userPin && isLocked) return <LockScreen />;
 
   return (
-    <div className="app-container">
+    <div className={`app-container ${theme}`}>
       <header className="header">
-        <h2 style={{ fontWeight: '800' }}>SmartDebt</h2>
+        <h2 style={{ fontWeight: '800' }} translate="no">SmartDebt</h2>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <span style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', fontWeight: '500' }}>
             Hola, {userName.split(' ')[0] || '!'}
@@ -535,6 +930,8 @@ export default function App() {
           {activeTab === 'home' && <HomeView />}
           {activeTab === 'expenses' && <ExpensesView />}
           {activeTab === 'debts' && <DebtsView />}
+          {activeTab === 'goals' && <GoalsView />}
+          {activeTab === 'history' && <HistoryView />}
           {activeTab === 'settings' && <SettingsView />}
           {activeTab === 'yearly' && <div className="scroll-area"><Card title="Proyección 2024">🚧 Próximamente en la nube...</Card></div>}
         </motion.div>
@@ -544,6 +941,7 @@ export default function App() {
         {[
           { id: 'home', icon: Home, label: 'Inicio' },
           { id: 'expenses', icon: PieChart, label: 'Gastos' },
+          { id: 'goals', icon: TrendingUp, label: 'Metas' },
           { id: 'debts', icon: CreditCard, label: 'Deudas' },
           { id: 'settings', icon: Settings, label: 'Perfil' }
         ].map(tab => (
@@ -561,7 +959,7 @@ export default function App() {
           <input type="number" name="amount" className="input-field" placeholder="Monto" defaultValue={editingItem?.amount} required style={{ marginBottom: '12px' }} />
           <div className="input-group">
             <select name="period" className="input-field" defaultValue={editingItem?.period || selectedPeriod}>
-              <option value="full">Todo el Mes</option>
+              <option value="full">Mensual</option>
               <option value="q1">1° Quincena</option>
               <option value="q2">2° Quincena</option>
             </select>
@@ -584,19 +982,30 @@ export default function App() {
 
       <Modal isOpen={showAddDebt} onClose={() => setShowAddDebt(false)} title="Deuda">
         <form onSubmit={saveDebt}>
-          <input type="text" name="name" className="input-field" placeholder="Nombre (Ej: Banco)" defaultValue={editingItem?.name} required style={{ marginBottom: '12px' }} />
+          <input type="text" name="name" className="input-field" placeholder="Nombre (ej. Banco)" defaultValue={editingItem?.name} required style={{ marginBottom: '12px' }} />
           <input type="number" name="total" className="input-field" placeholder="Monto Inicial" defaultValue={editingItem?.totalAmount} required style={{ marginBottom: '12px' }} />
           <input type="number" name="payment" className="input-field" placeholder="Cuota Mensual" defaultValue={editingItem?.monthlyPayment} required style={{ marginBottom: '12px' }} />
           <input type="number" name="remaining" className="input-field" placeholder="Saldo Actual" defaultValue={editingItem?.remaining} required style={{ marginBottom: '12px' }} />
+          <input type="number" name="dueDate" className="input-field" placeholder="Día de pago (1-31)" defaultValue={editingItem?.dueDate} required style={{ marginBottom: '12px' }} />
           <button className="btn-primary" style={{ width: '100%' }}>Guardar</button>
         </form>
       </Modal>
 
-      <Modal isOpen={showAddPayment} onClose={() => setShowAddPayment(false)} title={`Abonar a ${editingItem?.name}`}>
+      <Modal isOpen={showAddPayment} onClose={() => setShowAddPayment(false)} title={`Abono para ${editingItem?.name}`}>
         <form onSubmit={savePayment}>
-          <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '16px' }}>Registra un pago para reducir el saldo pendiente.</p>
+          <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '16px' }}>Registra un abono para reducir el saldo pendiente.</p>
           <input type="number" name="amount" className="input-field" placeholder="Monto del Abono" defaultValue={editingItem?.monthlyPayment} required style={{ marginBottom: '20px' }} />
-          <button className="btn-primary" style={{ width: '100%' }}>Confirmar Pago</button>
+          <button className="btn-primary" style={{ width: '100%' }}>Confirmar Abono</button>
+        </form>
+      </Modal>
+
+      <Modal isOpen={showAddGoal} onClose={() => setShowAddGoal(false)} title="Nueva Meta de Ahorro">
+        <form onSubmit={saveGoal}>
+          <input type="text" name="name" className="input-field" placeholder="Nombre (ej. Carro)" required style={{ marginBottom: '12px' }} />
+          <input type="number" name="target" className="input-field" placeholder="Monto Meta" required style={{ marginBottom: '12px' }} />
+          <input type="number" name="current" className="input-field" placeholder="Ahorro Inicial" defaultValue="0" required style={{ marginBottom: '12px' }} />
+          <input type="text" name="icon" className="input-field" placeholder="Emoji (ej. 🚗)" defaultValue="🎯" required style={{ marginBottom: '20px' }} />
+          <button className="btn-primary" style={{ width: '100%' }}>Crear Meta</button>
         </form>
       </Modal>
     </div>
