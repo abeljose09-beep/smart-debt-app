@@ -124,6 +124,7 @@ export default function App() {
   
   const [profile, setProfile] = useState({ salary: 2500000, frequency: 'monthly' });
   const [userName, setUserName] = useState('');
+  const [otherIncome, setOtherIncome] = useState([]);
   const [fixedExpenses, setFixedExpenses] = useState([]);
   const [variableExpenses, setVariableExpenses] = useState([]);
   const [debts, setDebts] = useState([]);
@@ -132,6 +133,7 @@ export default function App() {
   // -- UI States --
   const [showAddFixed, setShowAddFixed] = useState(false);
   const [showAddVar, setShowAddVar] = useState(false);
+  const [showAddOther, setShowAddOther] = useState(false);
   const [showAddDebt, setShowAddDebt] = useState(false);
   const [showAddPayment, setShowAddPayment] = useState(false);
   const [showAddGoal, setShowAddGoal] = useState(false);
@@ -169,6 +171,7 @@ export default function App() {
         const data = doc.data();
         setFixedExpenses(data.fixedExpenses || []);
         setVariableExpenses(data.variableExpenses || []);
+        setOtherIncome(data.otherIncome || []);
         setDebts(data.debts || []);
         setGoals(data.goals || []);
         setUserPin(data.pin || null);
@@ -235,23 +238,41 @@ export default function App() {
     [variableExpenses, currentMonthYear, selectedPeriod]
   );
 
+  const currentOtherIncome = useMemo(() => 
+    otherIncome.filter(e => e.monthYear === currentMonthYear && (selectedPeriod === 'full' || e.period === selectedPeriod)),
+    [otherIncome, currentMonthYear, selectedPeriod]
+  );
+
   const monthlySalary = profile.frequency === 'quincenal' ? profile.salary * 2 : profile.salary;
   const periodSalary = selectedPeriod === 'full' ? monthlySalary : (profile.frequency === 'quincenal' ? profile.salary : monthlySalary / 2);
 
   const totalFixed = currentFixed.reduce((sum, item) => sum + Number(item.amount), 0);
+  const totalOtherIncome = currentOtherIncome.reduce((sum, item) => sum + Number(item.amount), 0);
   const totalSavings = currentFixed.filter(e => e.isSavings).reduce((sum, item) => sum + Number(item.amount), 0);
   const totalVar = currentVariable.reduce((sum, item) => sum + Number(item.amount), 0);
-  const totalDebtPayments = debts.reduce((sum, item) => sum + Number(item.monthlyPayment), 0);
   
-  const totalRemaining = periodSalary - totalFixed - totalVar - (selectedPeriod === 'full' ? totalDebtPayments : totalDebtPayments/2);
+  const realDebtPayments = useMemo(() => {
+    let sum = 0;
+    debts.forEach(d => {
+      (d.payments || []).forEach(p => {
+        if (p.monthYear === currentMonthYear && (selectedPeriod === 'full' || p.period === selectedPeriod)) {
+          sum += Number(p.amount);
+        }
+      });
+    });
+    return sum;
+  }, [debts, currentMonthYear, selectedPeriod]);
+
+  const totalRemaining = periodSalary + totalOtherIncome - totalFixed - totalVar - realDebtPayments;
 
   const allTransactions = useMemo(() => {
     const list = [];
     fixedExpenses.forEach(e => list.push({ ...e, type: 'fijo', icon: TrendingDown, color: 'var(--danger)' }));
     variableExpenses.forEach(e => list.push({ ...e, type: 'variable', icon: TrendingUp, color: 'var(--warning)' }));
+    otherIncome.forEach(e => list.push({ ...e, type: 'otro_ingreso', icon: Plus, color: 'var(--success)' }));
     debts.forEach(d => {
       (d.payments || []).forEach(p => {
-        list.push({ ...p, name: `Abono: ${d.name}`, type: 'deuda', icon: CreditCard, color: 'var(--success)' });
+        list.push({ ...p, name: `Abono: ${d.name}`, debtId: d.id, type: 'deuda', icon: CreditCard, color: 'var(--success)' });
       });
     });
     return list.sort((a, b) => new Date(b.date || b.monthYear) - new Date(a.date || a.monthYear));
@@ -260,9 +281,9 @@ export default function App() {
   const chartData = useMemo(() => [
     { name: 'Fijos', value: totalFixed, color: 'var(--danger)' },
     { name: 'Variables', value: totalVar, color: 'var(--warning)' },
-    { name: 'Deudas', value: totalDebtPayments, color: 'var(--accent-color)' },
+    { name: 'Deudas', value: realDebtPayments, color: 'var(--accent-color)' },
     { name: 'Ahorro', value: totalSavings, color: 'var(--success)' }
-  ].filter(d => d.value > 0), [totalFixed, totalVar, totalDebtPayments, totalSavings]);
+  ].filter(d => d.value > 0), [totalFixed, totalVar, realDebtPayments, totalSavings]);
 
   // --- Handlers ---
   const saveFixed = async (e) => {
@@ -297,6 +318,22 @@ export default function App() {
     setShowAddVar(false);
   };
 
+  const saveOtherIncome = async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const item = {
+      id: editingItem?.id || Date.now(),
+      name: fd.get('name'),
+      amount: Number(fd.get('amount')),
+      period: selectedPeriod === 'full' ? 'q1' : selectedPeriod,
+      monthYear: currentMonthYear,
+      date: new Date().toISOString().split('T')[0]
+    };
+    const newList = editingItem ? otherIncome.map(i => i.id === item.id ? item : i) : [...otherIncome, item];
+    await updateFirestore({ otherIncome: newList });
+    setShowAddOther(false);
+  };
+
   const saveDebt = async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
@@ -324,7 +361,8 @@ export default function App() {
       id: Date.now(),
       amount: paymentAmount,
       date: new Date().toISOString().split('T')[0],
-      monthYear: currentMonthYear
+      monthYear: currentMonthYear,
+      period: selectedPeriod === 'full' ? 'q1' : selectedPeriod
     };
 
     const updatedDebts = debts.map(debt => {
@@ -356,10 +394,28 @@ export default function App() {
     } else if (type === 'var') {
       newList = variableExpenses.filter(i => i.id !== id);
       await updateFirestore({ variableExpenses: newList });
+    } else if (type === 'other') {
+      newList = otherIncome.filter(i => i.id !== id);
+      await updateFirestore({ otherIncome: newList });
     } else if (type === 'debt') {
       newList = debts.filter(i => i.id !== id);
       await updateFirestore({ debts: newList });
     }
+  };
+
+  const deletePayment = async (debtId, paymentId) => {
+    const updatedDebts = debts.map(debt => {
+      if (debt.id === debtId) {
+        const pToDelete = debt.payments.find(p => p.id === paymentId);
+        return {
+          ...debt,
+          remaining: debt.remaining + (pToDelete?.amount || 0),
+          payments: debt.payments.filter(p => p.id !== paymentId)
+        };
+      }
+      return debt;
+    });
+    await updateFirestore({ debts: updatedDebts });
   };
 
   const saveGoal = async (e) => {
@@ -468,21 +524,26 @@ export default function App() {
       <div style={{ marginBottom: '32px', textAlign: 'center' }}>
         <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>{selectedPeriod === 'full' ? 'Saldo Mensual' : `Saldo ${selectedPeriod.toUpperCase()}`}</p>
         <h1 style={{ fontSize: '2.5rem', fontWeight: '800' }} className="currency">{formatCurrency(totalRemaining)}</h1>
-        <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-          <span className="badge badge-info shadow-glow">INGRESO: {formatCurrency(periodSalary)}</span>
+        <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+          <span className="badge badge-info shadow-glow">SUELDO: {formatCurrency(periodSalary)}</span>
+          {totalOtherIncome > 0 && (
+            <span className="badge shadow-glow" style={{ background: 'rgba(16, 185, 129, 0.1)', color: 'var(--success)' }}>
+              OTROS INGRESOS: {formatCurrency(totalOtherIncome)}
+            </span>
+          )}
           
           <div style={{ width: '100%', maxWidth: '250px', marginTop: '15px' }}>
             <div className="progress-container">
               <div 
                 className="progress-bar" 
                 style={{ 
-                  width: `${Math.min(100, ((totalFixed + totalVar) / periodSalary) * 100)}%`,
-                  background: ((totalFixed + totalVar) / periodSalary) > 0.9 ? 'var(--danger)' : 'var(--accent-color)'
+                  width: `${Math.min(100, ((totalFixed + totalVar + realDebtPayments) / (periodSalary + totalOtherIncome)) * 100)}%`,
+                  background: ((totalFixed + totalVar + realDebtPayments) / (periodSalary + totalOtherIncome)) > 0.9 ? 'var(--danger)' : 'var(--accent-color)'
                 }}
               ></div>
             </div>
             <p style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', marginTop: '5px' }}>
-              Presupuesto consumido: {Math.round(((totalFixed + totalVar) / periodSalary) * 100)}%
+              Presupuesto consumido: {Math.round(((totalFixed + totalVar + realDebtPayments) / (periodSalary + totalOtherIncome)) * 100)}%
             </p>
           </div>
         </div>
@@ -587,33 +648,44 @@ export default function App() {
   const ExpensesView = () => (
     <div className="scroll-area">
       <TimeSelector />
-      <div style={{ display: 'flex', gap: '12px', marginBottom: '24px' }}>
-        <button className="btn-primary" style={{ flex: 1 }} onClick={() => { setEditingItem(null); setShowAddFixed(true); }}>
+      <div style={{ display: 'flex', gap: '8px', marginBottom: '24px', flexWrap: 'wrap' }}>
+        <button className="btn-primary" style={{ flex: 1, minWidth: '100px' }} onClick={() => { setEditingItem(null); setShowAddFixed(true); }}>
           + Fijo
         </button>
-        <button className="btn-secondary" style={{ flex: 1 }} onClick={() => { setEditingItem(null); setShowAddVar(true); }}>
+        <button className="btn-secondary" style={{ flex: 1, minWidth: '100px' }} onClick={() => { setEditingItem(null); setShowAddVar(true); }}>
           + Variable
+        </button>
+        <button className="btn-secondary" style={{ flex: 1, minWidth: '100px', background: 'rgba(16, 185, 129, 0.1)', color: 'var(--success)', border: '1px solid rgba(16, 185, 129, 0.2)' }} onClick={() => { setEditingItem(null); setShowAddOther(true); }}>
+          + Ingreso
         </button>
       </div>
 
       <h3 style={{ marginBottom: '12px', fontSize: '1.1rem' }}>Lista de Gastos</h3>
       <div className="glass-card" style={{ padding: 0 }}>
-        {[...currentFixed, ...currentVariable].map(item => (
+        {[...currentFixed, ...currentVariable, ...currentOtherIncome].map(item => (
           <div key={item.id} className="list-item" onClick={() => { 
             setEditingItem(item); 
-            if ('isSavings' in item) setShowAddFixed(true); else setShowAddVar(true); 
+            if ('isSavings' in item) setShowAddFixed(true); 
+            else if (currentOtherIncome.find(o => o.id === item.id)) setShowAddOther(true);
+            else setShowAddVar(true); 
           }}>
             <div>
               <p className="list-item-title">{item.name}</p>
               <p className="list-item-sub">
-                {item.isSavings ? 'Ahorro • ' : ''}
+                {item.isSavings ? 'Ahorro • ' : currentOtherIncome.find(o => o.id === item.id) ? 'Otros Ingresos • ' : ''}
                 {item.period === 'q1' ? '1° Quincena' : item.period === 'q2' ? '2° Quincena' : 'Mensual'}
               </p>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-              <span className="currency">{formatCurrency(item.amount)}</span>
+              <span className="currency" style={{ color: currentOtherIncome.find(o => o.id === item.id) ? 'var(--success)' : 'inherit' }}>
+                {currentOtherIncome.find(o => o.id === item.id) ? '+' : '-'}{formatCurrency(item.amount)}
+              </span>
               <button 
-                onClick={(e) => { e.stopPropagation(); deleteItem(item.id, 'isSavings' in item ? 'fixed' : 'var'); }}
+                onClick={(e) => { 
+                  e.stopPropagation(); 
+                  const type = 'isSavings' in item ? 'fixed' : (currentOtherIncome.find(o => o.id === item.id) ? 'other' : 'var');
+                  deleteItem(item.id, type); 
+                }}
                 style={{ background: 'none', border: 'none', color: 'var(--danger)', opacity: 0.6 }}
               >
                 <Trash2 size={16} />
@@ -683,9 +755,17 @@ export default function App() {
                 <div style={{ marginTop: '16px', borderTop: '1px solid var(--border-color)', paddingTop: '12px' }}>
                   <p style={{ fontSize: '0.75rem', fontWeight: '600', marginBottom: '8px' }}>Últimos Abonos</p>
                   {debt.payments.slice(-3).reverse().map(p => (
-                    <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', marginBottom: '4px', opacity: 0.8 }}>
-                      <span>{p.date}</span>
-                      <span style={{ color: 'var(--success)' }}>+{formatCurrency(p.amount)}</span>
+                    <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.7rem', marginBottom: '4px', opacity: 0.8 }}>
+                      <span>{p.date} ({p.period === 'q2' ? 'Q2' : 'Q1'})</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ color: 'var(--success)' }}>+{formatCurrency(p.amount)}</span>
+                        <button 
+                          onClick={(e) => { e.stopPropagation(); deletePayment(debt.id, p.id); }}
+                          style={{ background: 'none', border: 'none', color: 'var(--danger)', padding: 0, display: 'flex', alignItems: 'center' }}
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -913,6 +993,13 @@ export default function App() {
 
   return (
     <div className={`app-container ${theme}`}>
+      <Modal isOpen={showAddOther} onClose={() => setShowAddOther(false)} title="Otros Ingresos">
+        <form onSubmit={saveOtherIncome}>
+          <input type="text" name="name" className="input-field" placeholder="Descripción (ej. Venta de ropa)" defaultValue={editingItem?.name} required style={{ marginBottom: '12px' }} />
+          <input type="number" name="amount" className="input-field" placeholder="Monto" defaultValue={editingItem?.amount} required style={{ marginBottom: '20px' }} />
+          <button className="btn-primary" style={{ width: '100%' }}>Guardar Ingreso</button>
+        </form>
+      </Modal>
       <header className="header">
         <h2 style={{ fontWeight: '800' }} translate="no">SmartDebt</h2>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
