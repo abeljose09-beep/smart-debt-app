@@ -362,7 +362,9 @@ export default function App() {
       amount: paymentAmount,
       date: new Date().toISOString().split('T')[0],
       monthYear: currentMonthYear,
-      period: selectedPeriod === 'full' ? 'q1' : selectedPeriod
+      period: selectedPeriod === 'full' 
+        ? (new Date().getDate() <= 15 ? 'q1' : 'q2') 
+        : selectedPeriod
     };
 
     const updatedDebts = debts.map(debt => {
@@ -602,6 +604,11 @@ export default function App() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
             {debts
               .filter(d => d.remaining > 0 && d.dueDate)
+              .filter(d => {
+                if (selectedPeriod === 'full') return true;
+                const isQ1 = d.dueDate <= 15;
+                return selectedPeriod === 'q1' ? isQ1 : !isQ1;
+              })
               .sort((a, b) => (a.dueDate || 31) - (b.dueDate || 31))
               .slice(0, 3)
               .map(debt => {
