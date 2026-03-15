@@ -311,13 +311,15 @@ export default function App() {
 
     // Si está vinculado a una deuda, registrar el abono
     if (item.debtId) {
+      const paymentId = Date.now();
       const payment = {
-        id: Date.now(),
+        id: paymentId,
         amount: item.amount,
         date: new Date().toISOString().split('T')[0],
         monthYear: currentMonthYear,
         period: item.period === 'full' ? (new Date().getDate() <= 15 ? 'q1' : 'q2') : item.period
       };
+      item.linkedPaymentId = paymentId; // Guardar ID de enlace
       updatedDebts = updatedDebts.map(debt => {
         if (debt.id === Number(item.debtId)) {
           return {
@@ -365,13 +367,15 @@ export default function App() {
 
     // Si está vinculado a una deuda, registrar el abono
     if (item.debtId) {
+      const paymentId = Date.now();
       const payment = {
-        id: Date.now(),
+        id: paymentId,
         amount: item.amount,
         date: item.date,
         monthYear: currentMonthYear,
         period: item.period
       };
+      item.linkedPaymentId = paymentId; // Guardar ID de enlace
       updatedDebts = updatedDebts.map(debt => {
         if (debt.id === Number(item.debtId)) {
           return {
@@ -465,20 +469,54 @@ export default function App() {
   };
 
   const deleteItem = async (id, type) => {
-    let newList;
+    let updatedFixed = [...fixedExpenses];
+    let updatedVar = [...variableExpenses];
+    let updatedOthers = [...otherIncome];
+    let updatedDebts = [...debts];
+    let updatedGoals = [...goals];
+    let itemToDelete;
+
     if (type === 'fixed') {
-      newList = fixedExpenses.filter(i => i.id !== id);
-      await updateFirestore({ fixedExpenses: newList });
+      itemToDelete = fixedExpenses.find(i => i.id === id);
+      updatedFixed = fixedExpenses.filter(i => i.id !== id);
     } else if (type === 'var') {
-      newList = variableExpenses.filter(i => i.id !== id);
-      await updateFirestore({ variableExpenses: newList });
+      itemToDelete = variableExpenses.find(i => i.id === id);
+      updatedVar = variableExpenses.filter(i => i.id !== id);
     } else if (type === 'other') {
-      newList = otherIncome.filter(i => i.id !== id);
-      await updateFirestore({ otherIncome: newList });
+      updatedOthers = otherIncome.filter(i => i.id !== id);
     } else if (type === 'debt') {
-      newList = debts.filter(i => i.id !== id);
-      await updateFirestore({ debts: newList });
+      updatedDebts = debts.filter(i => i.id !== id);
     }
+
+    // Reversar abono de deuda si existía un vínculo
+    if (itemToDelete?.debtId && itemToDelete?.linkedPaymentId) {
+      updatedDebts = updatedDebts.map(debt => {
+        if (debt.id === Number(itemToDelete.debtId)) {
+          const pToDelete = debt.payments?.find(p => p.id === itemToDelete.linkedPaymentId);
+          return {
+            ...debt,
+            remaining: debt.remaining + (pToDelete?.amount || 0),
+            payments: debt.payments?.filter(p => p.id !== itemToDelete.linkedPaymentId) || []
+          };
+        }
+        return debt;
+      });
+    }
+
+    // Reversar progreso de meta si existía un vínculo
+    if (itemToDelete?.isSavings && itemToDelete?.goalId) {
+      updatedGoals = updatedGoals.map(g => 
+        g.id === Number(itemToDelete.goalId) ? { ...g, current: Math.max(0, g.current - itemToDelete.amount) } : g
+      );
+    }
+
+    await updateFirestore({ 
+      fixedExpenses: updatedFixed,
+      variableExpenses: updatedVar,
+      otherIncome: updatedOthers,
+      debts: updatedDebts,
+      goals: updatedGoals
+    });
   };
 
   const deletePayment = async (debtId, paymentId) => {
