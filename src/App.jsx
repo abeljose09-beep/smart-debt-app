@@ -310,7 +310,7 @@ export default function App() {
         period: item.period === 'full' ? (new Date().getDate() <= 15 ? 'q1' : 'q2') : item.period
       };
       const updatedDebts = debts.map(debt => {
-        if (debt.id === item.debtId) {
+        if (debt.id === Number(item.debtId)) {
           return {
             ...debt,
             remaining: debt.remaining - item.amount,
@@ -358,7 +358,7 @@ export default function App() {
         period: item.period
       };
       const updatedDebts = debts.map(debt => {
-        if (debt.id === item.debtId) {
+        if (debt.id === Number(item.debtId)) {
           return {
             ...debt,
             remaining: debt.remaining - item.amount,
