@@ -735,9 +735,9 @@ export default function App() {
               <motion.div 
                 key={t.id}
                 whileTap={{ scale: 0.95 }}
-                onClick={() => {
+                onClick={async () => {
                   setTheme(t.id);
-                  updateFirestore({ theme: t.id });
+                  await setDoc(doc(db, 'users', user.uid), { theme: t.id }, { merge: true });
                 }}
                 style={{
                   padding: '16px',
